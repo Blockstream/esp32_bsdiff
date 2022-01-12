@@ -36,7 +36,19 @@ struct bspatch_stream
 	int (*read)(const struct bspatch_stream* stream, void* buffer, int length);
 };
 
-int bspatch(const uint8_t* old, int64_t oldsize, uint8_t* new, int64_t newsize, struct bspatch_stream* stream);
+struct bspatch_stream_i
+{
+	void* opaque;
+	int (*read)(const struct bspatch_stream_i* stream, void* buffer, int pos, int length);
+};
+
+struct bspatch_stream_n
+{
+	void* opaque;
+	int (*write)(const struct bspatch_stream_n* stream, const void *buffer, int length);
+};
+
+int bspatch(struct bspatch_stream_i* old, int64_t oldsize, struct bspatch_stream_n* new, int64_t newsize, struct bspatch_stream* stream);
 
 #endif
 

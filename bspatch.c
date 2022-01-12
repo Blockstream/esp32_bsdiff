@@ -26,7 +26,27 @@
  */
 
 #include <limits.h>
+
+#ifdef ESP_PLATFORM
+#include <sdkconfig.h>
+#endif
+
+#ifndef CONFIG_BSDIFF_BSPATCH_BUF_SIZE
+#define CONFIG_BSDIFF_BSPATCH_BUF_SIZE (8 * 1024)
+#endif
+
+
 #include "bspatch.h"
+
+/* CONFIG_BSDIFF_BSPATCH_BUF_SIZE can't be smaller than 8 */
+#if 7 >= CONFIG_BSDIFF_BSPATCH_BUF_SIZE
+#error "Error, CONFIG_BSDIFF_BSPATCH_BUF_SIZE can't be smaller than 8"
+#endif
+
+#define BUF_SIZE CONFIG_BSDIFF_BSPATCH_BUF_SIZE
+
+
+#define min(A, B) ((A) < (B) ? (A) : (B))
 
 static int64_t offtin(uint8_t *buf)
 {
@@ -46,12 +66,14 @@ static int64_t offtin(uint8_t *buf)
 	return y;
 }
 
-int bspatch(const uint8_t* old, int64_t oldsize, uint8_t* new, int64_t newsize, struct bspatch_stream* stream)
+int bspatch(struct bspatch_stream_i *old, int64_t oldsize, struct bspatch_stream_n *new, int64_t newsize, struct bspatch_stream* stream)
 {
-	uint8_t buf[8];
+	uint8_t buf[BUF_SIZE];
 	int64_t oldpos,newpos;
 	int64_t ctrl[3];
-	int64_t i;
+	int64_t i,k;
+	int64_t towrite;
+	const int64_t half_len = BUF_SIZE / 2;
 
 	oldpos=0;newpos=0;
 	while(newpos<newsize) {
@@ -60,7 +82,7 @@ int bspatch(const uint8_t* old, int64_t oldsize, uint8_t* new, int64_t newsize, 
 			if (stream->read(stream, buf, 8))
 				return -1;
 			ctrl[i]=offtin(buf);
-		};
+		}
 
 		/* Sanity-check */
 		if (ctrl[0]<0 || ctrl[0]>INT_MAX ||
@@ -68,14 +90,20 @@ int bspatch(const uint8_t* old, int64_t oldsize, uint8_t* new, int64_t newsize, 
 			newpos+ctrl[0]>newsize)
 			return -1;
 
-		/* Read diff string */
-		if (stream->read(stream, new + newpos, ctrl[0]))
-			return -1;
-
-		/* Add old data to diff string */
-		for(i=0;i<ctrl[0];i++)
-			if((oldpos+i>=0) && (oldpos+i<oldsize))
-				new[newpos+i]+=old[oldpos+i];
+		/* Read diff string and add old data on the fly */
+		i = ctrl[0];
+		while (i) {
+			towrite = min(i, half_len);
+			if (stream->read(stream, &buf[half_len], towrite))
+				return -1;
+			if (old->read(old, buf, oldpos + (ctrl[0] - i), towrite))
+				return -1;
+			for(k=0;k<towrite;k++)
+				buf[k + half_len] += buf[k];
+			if (new->write(new, &buf[half_len], towrite))
+				return -1;
+			i -= towrite;
+		}
 
 		/* Adjust pointers */
 		newpos+=ctrl[0];
@@ -85,9 +113,16 @@ int bspatch(const uint8_t* old, int64_t oldsize, uint8_t* new, int64_t newsize, 
 		if(newpos+ctrl[1]>newsize)
 			return -1;
 
-		/* Read extra string */
-		if (stream->read(stream, new + newpos, ctrl[1]))
-			return -1;
+		/* Read extra string and copy over to new on the fly*/
+		i = ctrl[1];
+		while (i) {
+			towrite = min(i, BUF_SIZE);
+			if (stream->read(stream, buf, towrite))
+				return -1;
+			if (new->write(new, buf, towrite))
+				return -1;
+			i -= towrite;
+		}
 
 		/* Adjust pointers */
 		newpos+=ctrl[1];
@@ -99,7 +134,6 @@ int bspatch(const uint8_t* old, int64_t oldsize, uint8_t* new, int64_t newsize, 
 
 #if defined(BSPATCH_EXECUTABLE)
 
-#include <bzlib.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -110,17 +144,31 @@ int bspatch(const uint8_t* old, int64_t oldsize, uint8_t* new, int64_t newsize, 
 #include <unistd.h>
 #include <fcntl.h>
 
-static int bz2_read(const struct bspatch_stream* stream, void* buffer, int length)
+static int __read(const struct bspatch_stream* stream, void* buffer, int length)
 {
-	int n;
-	int bz2err;
-	BZFILE* bz2;
-
-	bz2 = (BZFILE*)stream->opaque;
-	n = BZ2_bzRead(&bz2err, bz2, buffer, length);
-	if (n != length)
+	if (fread(buffer, 1, length, (FILE*)stream->opaque) != length) {
 		return -1;
+	}
+	return 0;
+}
 
+static int old_read(const struct bspatch_stream_i* stream, void* buffer, int pos, int length) {
+	uint8_t* old;
+	old = (uint8_t*)stream->opaque;
+	memcpy(buffer, old + pos, length);
+	return 0;
+}
+
+struct NewCtx {
+	uint8_t* new;
+	int pos_write;
+};
+
+static int new_write(const struct bspatch_stream_n* stream, const void *buffer, int length) {
+	struct NewCtx* new;
+	new = (struct NewCtx*)stream->opaque;
+	memcpy(new->new + new->pos_write, buffer, length);
+	new->pos_write += length;
 	return 0;
 }
 
@@ -128,37 +176,23 @@ int main(int argc,char * argv[])
 {
 	FILE * f;
 	int fd;
-	int bz2err;
 	uint8_t header[24];
 	uint8_t *old, *new;
 	int64_t oldsize, newsize;
-	BZFILE* bz2;
 	struct bspatch_stream stream;
+	struct bspatch_stream_i oldstream;
+	struct bspatch_stream_n newstream;
 	struct stat sb;
 
-	if(argc!=4) errx(1,"usage: %s oldfile newfile patchfile\n",argv[0]);
+	if(argc!=5) errx(1,"usage: %s oldfile newfile newsize patchfile\n",argv[0]);
+
+	newsize = atoi(argv[3]);
 
 	/* Open patch file */
-	if ((f = fopen(argv[3], "r")) == NULL)
-		err(1, "fopen(%s)", argv[3]);
+	if ((f = fopen(argv[4], "r")) == NULL)
+		err(1, "fopen(%s)", argv[4]);
 
-	/* Read header */
-	if (fread(header, 1, 24, f) != 24) {
-		if (feof(f))
-			errx(1, "Corrupt patch\n");
-		err(1, "fread(%s)", argv[3]);
-	}
-
-	/* Check for appropriate magic */
-	if (memcmp(header, "ENDSLEY/BSDIFF43", 16) != 0)
-		errx(1, "Corrupt patch\n");
-
-	/* Read lengths from header */
-	newsize=offtin(header+16);
-	if(newsize<0)
-		errx(1,"Corrupt patch\n");
-
-	/* Close patch file and re-open it via libbzip2 at the right places */
+	/* Close patch file and re-open it at the right places */
 	if(((fd=open(argv[1],O_RDONLY,0))<0) ||
 		((oldsize=lseek(fd,0,SEEK_END))==-1) ||
 		((old=malloc(oldsize+1))==NULL) ||
@@ -168,16 +202,17 @@ int main(int argc,char * argv[])
 		(close(fd)==-1)) err(1,"%s",argv[1]);
 	if((new=malloc(newsize+1))==NULL) err(1,NULL);
 
-	if (NULL == (bz2 = BZ2_bzReadOpen(&bz2err, f, 0, 0, NULL, 0)))
-		errx(1, "BZ2_bzReadOpen, bz2err=%d", bz2err);
-
-	stream.read = bz2_read;
-	stream.opaque = bz2;
-	if (bspatch(old, oldsize, new, newsize, &stream))
+	stream.read = __read;
+	oldstream.read = old_read;
+	newstream.write = new_write;
+	stream.opaque = f;
+	oldstream.opaque = old;
+	struct NewCtx ctx = { .pos_write = 0, .new = new };
+	newstream.opaque = &ctx;
+	if (bspatch(&oldstream, oldsize, &newstream, newsize, &stream))
 		errx(1, "bspatch");
 
-	/* Clean up the bzip2 reads */
-	BZ2_bzReadClose(&bz2err, bz2);
+	/* Clean up */
 	fclose(f);
 
 	/* Write the new file */

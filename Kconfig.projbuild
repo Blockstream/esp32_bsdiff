@@ -1,0 +1,10 @@
+menu "bsdiff bspatch configuration"
+
+    config BSDIFF_BSPATCH_BUF_SIZE
+        int "Buffer used in bspatch to apply the patch, minimum 8 bytes"
+        default 8192
+        range 8 262144
+        help
+            This variant of bspatch is modified to use this buffer
+
+endmenu
