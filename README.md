@@ -21,10 +21,14 @@ $ git submodule add git@github.com:blockstream/esp32_bsdiff.git esp32_bsdiff
 To build bsdiff and bspatch for your computer:
 ```
 gcc -O2 -DBSDIFF_EXECUTABLE -o esp32_bsdiff components/esp32_bsdiff/bsdiff.c
-gcc -O2 -DBSDIFF_EXECUTABLE -o esp32_bspatch components/esp32_bsdiff/bspatch.c
+gcc -O2 -DBSPATCH_EXECUTABLE -o esp32_bspatch components/esp32_bsdiff/bspatch.c
 ```
 
-Usage of the command line tools are unchanged from bsdiff/bspatch.
+Usage of the command line tools are unchanged from bsdiff.
+```"usage: %s oldfile newfile patchfile```
+
+For bspatch it requires to pass in as a third argument the new file size in bytes shifting the patch filename to forth.
+```"usage: %s oldfile newfile newsize patchfile```
 
 To compress the resulting patch one may use the following (and use miniz.h to decompress on the esp32):
 

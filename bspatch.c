@@ -176,7 +176,6 @@ int main(int argc,char * argv[])
 {
 	FILE * f;
 	int fd;
-	uint8_t header[24];
 	uint8_t *old, *new;
 	int64_t oldsize, newsize;
 	struct bspatch_stream stream;

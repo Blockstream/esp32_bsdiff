@@ -372,7 +372,6 @@ int main(int argc,char *argv[])
 	int fd;
 	uint8_t *old,*new;
 	off_t oldsize,newsize;
-	uint8_t buf[8];
 	FILE * pf;
 	struct bsdiff_stream stream;
 
