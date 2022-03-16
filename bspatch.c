@@ -44,7 +44,16 @@
 #endif
 
 #define BUF_SIZE CONFIG_BSDIFF_BSPATCH_BUF_SIZE
+#define ERROR_BSPATCH (-1)
 
+#define RETURN_IF_NON_ZERO(expr)        \
+    do                                  \
+    {                                   \
+        const int ret = (expr);         \
+        if (ret) {                      \
+            return ret;                 \
+        }                               \
+    } while(0)
 
 #define min(A, B) ((A) < (B) ? (A) : (B))
 
@@ -66,6 +75,11 @@ static int64_t offtin(uint8_t *buf)
 	return y;
 }
 
+/*
+ * Returns 0 on success
+ * Returns -1 on error in patching logic
+ * Returns any non-zero return code from stream read() and write() functions (which imply error)
+ */
 int bspatch(struct bspatch_stream_i *old, int64_t oldsize, struct bspatch_stream_n *new, int64_t newsize, struct bspatch_stream* stream)
 {
 	uint8_t buf[BUF_SIZE];
@@ -79,8 +93,7 @@ int bspatch(struct bspatch_stream_i *old, int64_t oldsize, struct bspatch_stream
 	while(newpos<newsize) {
 		/* Read control data */
 		for(i=0;i<=2;i++) {
-			if (stream->read(stream, buf, 8))
-				return -1;
+			RETURN_IF_NON_ZERO(stream->read(stream, buf, 8));
 			ctrl[i]=offtin(buf);
 		}
 
@@ -88,20 +101,19 @@ int bspatch(struct bspatch_stream_i *old, int64_t oldsize, struct bspatch_stream
 		if (ctrl[0]<0 || ctrl[0]>INT_MAX ||
 			ctrl[1]<0 || ctrl[1]>INT_MAX ||
 			newpos+ctrl[0]>newsize)
-			return -1;
+			return ERROR_BSPATCH;
 
 		/* Read diff string and add old data on the fly */
 		i = ctrl[0];
 		while (i) {
 			towrite = min(i, half_len);
-			if (stream->read(stream, &buf[half_len], towrite))
-				return -1;
-			if (old->read(old, buf, oldpos + (ctrl[0] - i), towrite))
-				return -1;
+			RETURN_IF_NON_ZERO(stream->read(stream, &buf[half_len], towrite));
+			RETURN_IF_NON_ZERO(old->read(old, buf, oldpos + (ctrl[0] - i), towrite));
+
 			for(k=0;k<towrite;k++)
 				buf[k + half_len] += buf[k];
-			if (new->write(new, &buf[half_len], towrite))
-				return -1;
+
+			RETURN_IF_NON_ZERO(new->write(new, &buf[half_len], towrite));
 			i -= towrite;
 		}
 
@@ -111,16 +123,14 @@ int bspatch(struct bspatch_stream_i *old, int64_t oldsize, struct bspatch_stream
 
 		/* Sanity-check */
 		if(newpos+ctrl[1]>newsize)
-			return -1;
+			return ERROR_BSPATCH;
 
 		/* Read extra string and copy over to new on the fly*/
 		i = ctrl[1];
 		while (i) {
 			towrite = min(i, BUF_SIZE);
-			if (stream->read(stream, buf, towrite))
-				return -1;
-			if (new->write(new, buf, towrite))
-				return -1;
+			RETURN_IF_NON_ZERO(stream->read(stream, buf, towrite));
+			RETURN_IF_NON_ZERO(new->write(new, buf, towrite));
 			i -= towrite;
 		}
 
