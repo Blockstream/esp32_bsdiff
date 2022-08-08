@@ -1,14 +1,22 @@
 #!/bin/bash
 set -eo pipefail
 
+find .
+echo 'endfind'
+if [[ "$(basename ${PWD})" != "test" ]]
+then
+    cd test
+    find .
+fi
+
 # we clean up the dir directory just in case and sdkconfig
 rm -fr build sdkconfig
 
 # first we set idf to use linux as a target
-idf.py --preview set-target linux
+idf.py -D EXTRA_COMPONENT_DIRS="${PWD}/.." --preview set-target linux
 
 # we build the artifact
-idf.py build
+idf.py -D EXTRA_COMPONENT_DIRS="${PWD}/.." build
 
 # we run the test
 ./build/test_bsdiff.elf
